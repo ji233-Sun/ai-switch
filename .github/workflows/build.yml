@@ -77,3 +77,125 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
+
+  update-homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tauri.conf.json
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          TAG="${{ github.ref_name }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for release assets to be available
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          echo "Waiting for DMG assets in release $TAG..."
+          for i in $(seq 1 30); do
+            ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
+            if echo "$ASSETS" | grep -q "aarch64.dmg" && echo "$ASSETS" | grep -q "x64.dmg"; then
+              echo "Both DMG assets found."
+              exit 0
+            fi
+            echo "Attempt $i: assets not ready yet, waiting 30s..."
+            sleep 30
+          done
+          echo "::error::Timed out waiting for DMG assets"
+          exit 1
+
+      - name: Download macOS DMGs and compute SHA256
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          gh release download "$TAG" \
+            --pattern "ai-switch_${VERSION}_aarch64.dmg" \
+            --pattern "ai-switch_${VERSION}_x64.dmg" \
+            --dir .
+
+          SHA_ARM=$(shasum -a 256 "ai-switch_${VERSION}_aarch64.dmg" | awk '{print $1}')
+          SHA_X64=$(shasum -a 256 "ai-switch_${VERSION}_x64.dmg" | awk '{print $1}')
+
+          echo "sha_arm=$SHA_ARM" >> "$GITHUB_OUTPUT"
+          echo "sha_x64=$SHA_X64" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Cask formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          SHA_ARM="${{ steps.sha.outputs.sha_arm }}"
+          SHA_X64="${{ steps.sha.outputs.sha_x64 }}"
+
+          mkdir -p Casks
+          cat > Casks/ai-switch.rb << 'CASK_EOF'
+          cask "ai-switch" do
+            version "VERSION_PLACEHOLDER"
+
+            on_arm do
+              url "https://github.com/ji233-Sun/ai-switch/releases/download/TAG_PLACEHOLDER/ai-switch_#{version}_aarch64.dmg"
+              sha256 "SHA_ARM_PLACEHOLDER"
+            end
+
+            on_intel do
+              url "https://github.com/ji233-Sun/ai-switch/releases/download/TAG_PLACEHOLDER/ai-switch_#{version}_x64.dmg"
+              sha256 "SHA_X64_PLACEHOLDER"
+            end
+
+            name "AI Switch"
+            desc "Desktop application for AI model switching"
+            homepage "https://github.com/ji233-Sun/ai-switch"
+
+            livecheck do
+              url :url
+              strategy :github_latest
+            end
+
+            app "ai-switch.app"
+
+            zap trash: [
+              "~/Library/Application Support/com.ai-switch.app",
+              "~/Library/Caches/com.ai-switch.app",
+              "~/Library/Preferences/com.ai-switch.app.plist",
+              "~/Library/Saved Application State/com.ai-switch.app.savedState",
+            ]
+          end
+          CASK_EOF
+
+          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" Casks/ai-switch.rb
+          sed -i "s/TAG_PLACEHOLDER/$TAG/g" Casks/ai-switch.rb
+          sed -i "s/SHA_ARM_PLACEHOLDER/$SHA_ARM/g" Casks/ai-switch.rb
+          sed -i "s/SHA_X64_PLACEHOLDER/$SHA_X64/g" Casks/ai-switch.rb
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' Casks/ai-switch.rb
+
+          echo "Generated Cask:"
+          cat Casks/ai-switch.rb
+
+      - name: Push to homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/ji233-Sun/homebrew-tap.git" tap-repo
+          mkdir -p tap-repo/Casks
+          cp Casks/ai-switch.rb tap-repo/Casks/ai-switch.rb
+
+          cd tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/ai-switch.rb
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: update ai-switch cask to ${{ steps.version.outputs.tag }}"
+          git push
