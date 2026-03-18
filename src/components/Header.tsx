@@ -1,11 +1,14 @@
 import type { TabKey } from "./TabBar";
 
+export type ClaudeSubTab = "profiles" | "mcp";
+
 interface HeaderProps {
   onCreateNew: () => void;
   onImport: () => void;
   importing: boolean;
   importLabel: string;
   activeTab: TabKey;
+  claudeSubTab: ClaudeSubTab;
   onToggleOpenaiMode: () => void;
   openaiMode: boolean;
 }
@@ -16,9 +19,12 @@ export function Header({
   importing,
   importLabel,
   activeTab,
+  claudeSubTab,
   onToggleOpenaiMode,
   openaiMode,
 }: HeaderProps) {
+  const isClaudeMcp = activeTab === "claude" && claudeSubTab === "mcp";
+
   return (
     <header className="header">
       <div className="header-left">
@@ -34,16 +40,18 @@ export function Header({
             {openaiMode ? "关闭 OpenAI 直连" : "OpenAI 直连"}
           </button>
         )}
-        <button
-          className="btn btn-secondary"
-          onClick={onImport}
-          disabled={importing}
-          aria-busy={importing}
-        >
-          {importing ? "导入中..." : importLabel}
-        </button>
+        {!isClaudeMcp && (
+          <button
+            className="btn btn-secondary"
+            onClick={onImport}
+            disabled={importing}
+            aria-busy={importing}
+          >
+            {importing ? "导入中..." : importLabel}
+          </button>
+        )}
         <button className="btn btn-primary" onClick={onCreateNew}>
-          新建配置
+          {isClaudeMcp ? "添加 MCP Server" : "新建配置"}
         </button>
       </div>
     </header>

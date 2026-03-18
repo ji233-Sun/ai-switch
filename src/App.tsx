@@ -1,13 +1,17 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useProfiles } from "./hooks/useProfiles";
 import { useCodexProfiles } from "./hooks/useCodexProfiles";
+import { useMcpServers } from "./hooks/useMcpServers";
 import { Header } from "./components/Header";
+import type { ClaudeSubTab } from "./components/Header";
 import { TabBar } from "./components/TabBar";
 import type { TabKey } from "./components/TabBar";
 import { ProfileList } from "./components/ProfileList";
 import { ProfileForm } from "./components/ProfileForm";
 import { CodexProfileList } from "./components/CodexProfileList";
 import { CodexProfileForm } from "./components/CodexProfileForm";
+import { McpServerList } from "./components/McpServerList";
+import { McpServerForm } from "./components/McpServerForm";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { EmptyState } from "./components/EmptyState";
 import type { Profile, ProfileFormData } from "./types/profile";
@@ -21,7 +25,10 @@ type ModalState =
   | { type: "delete-claude"; id: string; name: string }
   | { type: "create-codex" }
   | { type: "edit-codex"; profile: CodexProfile }
-  | { type: "delete-codex"; id: string; name: string };
+  | { type: "delete-codex"; id: string; name: string }
+  | { type: "create-mcp" }
+  | { type: "edit-mcp"; name: string; configJson: string }
+  | { type: "delete-mcp"; name: string };
 
 interface ToastState {
   message: string;
@@ -32,8 +39,10 @@ interface ToastState {
 function App() {
   const claude = useProfiles();
   const codex = useCodexProfiles();
+  const mcp = useMcpServers();
 
   const [activeTab, setActiveTab] = useState<TabKey>("claude");
+  const [claudeSubTab, setClaudeSubTab] = useState<ClaudeSubTab>("profiles");
   const [modal, setModal] = useState<ModalState>({ type: "none" });
   const [importing, setImporting] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -212,10 +221,73 @@ function App() {
     }
   };
 
-  // 当前 tab 的状态
-  const currentLoading = activeTab === "claude" ? claude.loading : codex.loading;
-  const currentError = activeTab === "claude" ? claude.error : codex.error;
-  const clearCurrentError = activeTab === "claude" ? claude.clearError : codex.clearError;
+  // --- MCP handlers ---
+  const handleMcpCreateNew = () => setModal({ type: "create-mcp" });
+
+  const handleMcpEdit = (name: string) => {
+    const server = mcp.servers.find((s) => s.name === name);
+    if (server) {
+      setModal({
+        type: "edit-mcp",
+        name: server.name,
+        configJson: JSON.stringify(server.config, null, 2),
+      });
+    }
+  };
+
+  const handleMcpDelete = (name: string) => {
+    setModal({ type: "delete-mcp", name });
+  };
+
+  const handleMcpCreateSubmit = async (name: string, configJson: string) => {
+    await mcp.addServer(name, configJson);
+    setModal({ type: "none" });
+    showToast(`MCP server "${name}" 已添加`, "success");
+  };
+
+  const handleMcpEditSubmit = async (name: string, configJson: string) => {
+    await mcp.updateServer(name, configJson);
+    setModal({ type: "none" });
+    showToast(`MCP server "${name}" 已更新`, "success");
+  };
+
+  const handleMcpDeleteConfirm = async () => {
+    if (modal.type !== "delete-mcp") return;
+    try {
+      await mcp.deleteServer(modal.name);
+      setModal({ type: "none" });
+      showToast(`MCP server "${modal.name}" 已删除`, "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  };
+
+  // Create handler based on current context
+  const handleCreateNew = () => {
+    if (activeTab === "claude") {
+      claudeSubTab === "mcp" ? handleMcpCreateNew() : handleClaudeCreateNew();
+    } else {
+      handleCodexCreateNew();
+    }
+  };
+
+  // Current tab loading/error state
+  const currentLoading =
+    activeTab === "claude"
+      ? claude.loading || (claudeSubTab === "mcp" && mcp.loading)
+      : codex.loading;
+  const currentError =
+    activeTab === "claude"
+      ? claudeSubTab === "mcp"
+        ? mcp.error
+        : claude.error
+      : codex.error;
+  const clearCurrentError =
+    activeTab === "claude"
+      ? claudeSubTab === "mcp"
+        ? mcp.clearError
+        : claude.clearError
+      : codex.clearError;
 
   if (currentLoading) {
     return (
@@ -231,11 +303,12 @@ function App() {
   return (
     <main className="container">
       <Header
-        onCreateNew={activeTab === "claude" ? handleClaudeCreateNew : handleCodexCreateNew}
+        onCreateNew={handleCreateNew}
         onImport={activeTab === "claude" ? handleClaudeImport : handleCodexImport}
         importing={importing}
         importLabel={activeTab === "claude" ? "从 Claude Code 导入" : "从 Codex 导入"}
         activeTab={activeTab}
+        claudeSubTab={claudeSubTab}
         onToggleOpenaiMode={handleToggleOpenaiMode}
         openaiMode={codex.openaiMode}
       />
@@ -257,17 +330,82 @@ function App() {
 
       {activeTab === "claude" && (
         <>
-          {claude.profiles.length === 0 ? (
-            <EmptyState onCreateNew={handleClaudeCreateNew} onImport={handleClaudeImport} />
-          ) : (
-            <ProfileList
-              profiles={claude.profiles}
-              activeProfileId={claude.activeProfileId}
-              onActivate={handleClaudeActivate}
-              onEdit={handleClaudeEdit}
-              onDelete={handleClaudeDelete}
-              onToggleStar={handleClaudeToggleStar}
-            />
+          {/* Claude Code sub-tabs */}
+          <div className="sub-tab-bar" role="tablist">
+            <button
+              className={`sub-tab-item ${claudeSubTab === "profiles" ? "sub-tab-item-active" : ""}`}
+              role="tab"
+              aria-selected={claudeSubTab === "profiles"}
+              onClick={() => setClaudeSubTab("profiles")}
+            >
+              配置
+            </button>
+            <button
+              className={`sub-tab-item ${claudeSubTab === "mcp" ? "sub-tab-item-active" : ""}`}
+              role="tab"
+              aria-selected={claudeSubTab === "mcp"}
+              onClick={() => setClaudeSubTab("mcp")}
+            >
+              MCP Servers
+            </button>
+          </div>
+
+          {claudeSubTab === "profiles" && (
+            <>
+              {claude.profiles.length === 0 ? (
+                <EmptyState onCreateNew={handleClaudeCreateNew} onImport={handleClaudeImport} />
+              ) : (
+                <ProfileList
+                  profiles={claude.profiles}
+                  activeProfileId={claude.activeProfileId}
+                  onActivate={handleClaudeActivate}
+                  onEdit={handleClaudeEdit}
+                  onDelete={handleClaudeDelete}
+                  onToggleStar={handleClaudeToggleStar}
+                />
+              )}
+            </>
+          )}
+
+          {claudeSubTab === "mcp" && (
+            <>
+              {mcp.servers.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-state-icon">
+                    <svg
+                      width="48"
+                      height="48"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 2a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                      <path d="M19 9a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0v-1a3 3 0 0 0-3-3Z" />
+                      <path d="M5 9a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0v-1a3 3 0 0 0-3-3Z" />
+                      <path d="M12 18a3 3 0 0 0-3 3 3 3 0 0 0 6 0 3 3 0 0 0-3-3Z" />
+                      <path d="M12 6v6m0 6v-6m0 0-6-1.5M12 12l6-1.5M12 12l-6 1.5m6-1.5 6 1.5" />
+                    </svg>
+                  </div>
+                  <h2>还没有 MCP Server</h2>
+                  <p>添加一个 MCP server 配置到 ~/.claude.json 中管理。</p>
+                  <div className="empty-state-actions">
+                    <button className="btn btn-primary" onClick={handleMcpCreateNew}>
+                      添加 MCP Server
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <McpServerList
+                  servers={mcp.servers}
+                  onEdit={handleMcpEdit}
+                  onDelete={handleMcpDelete}
+                />
+              )}
+            </>
           )}
         </>
       )}
@@ -331,6 +469,28 @@ function App() {
           confirmText="删除"
           danger
           onConfirm={handleCodexDeleteConfirm}
+          onCancel={handleCloseModal}
+        />
+      )}
+
+      {/* MCP modals */}
+      {modal.type === "create-mcp" && (
+        <McpServerForm onSubmit={handleMcpCreateSubmit} onCancel={handleCloseModal} />
+      )}
+      {modal.type === "edit-mcp" && (
+        <McpServerForm
+          initial={{ name: modal.name, configJson: modal.configJson }}
+          onSubmit={handleMcpEditSubmit}
+          onCancel={handleCloseModal}
+        />
+      )}
+      {modal.type === "delete-mcp" && (
+        <ConfirmDialog
+          title="删除 MCP Server"
+          message={`确定要删除 MCP server "${modal.name}" 吗？此操作将从 ~/.claude.json 中移除该配置。`}
+          confirmText="删除"
+          danger
+          onConfirm={handleMcpDeleteConfirm}
           onCancel={handleCloseModal}
         />
       )}

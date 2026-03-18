@@ -5,6 +5,8 @@ mod codex_models;
 mod codex_storage;
 mod commands;
 mod error;
+mod mcp_commands;
+mod mcp_config;
 mod models;
 mod storage;
 
@@ -36,6 +38,11 @@ pub fn run() {
             codex_commands::get_codex_store_state,
             codex_commands::import_from_codex,
             codex_commands::detect_active_codex_profile,
+            // MCP commands
+            mcp_commands::list_mcp_servers,
+            mcp_commands::add_mcp_server,
+            mcp_commands::update_mcp_server,
+            mcp_commands::delete_mcp_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

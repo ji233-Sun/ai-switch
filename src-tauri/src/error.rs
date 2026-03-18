@@ -20,6 +20,9 @@ pub enum AppError {
     #[error("Codex 配置文件不存在: {0}")]
     CodexSettingsNotFound(String),
 
+    #[error("~/.claude.json 不存在: {0}")]
+    ClaudeJsonNotFound(String),
+
     #[error("TOML 编辑错误: {0}")]
     TomlEdit(String),
 
